@@ -10,6 +10,7 @@ import type { ClientClass } from "../../structure/Client";
 
 export type CommandMeta = {
 	guildOnly?: boolean;
+	dmOnly?: boolean;
 	ownerOnly?: boolean;
 
 	cooldownMs?: number;
@@ -66,6 +67,11 @@ export type SlashCommand<TClient = ClientClass> = {
 		ctx: CommandContext<ChatInputCommandInteraction, TClient>,
 	) => Promise<void>;
 
+	subcommands?: Record<
+		string,
+		(ctx: CommandContext<ChatInputCommandInteraction, TClient>) => Promise<void>
+	>;
+
 	autocomplete?: (
 		ctx: CommandContext<AutocompleteInteraction, TClient>,
 	) => Promise<void>;
@@ -77,3 +83,9 @@ export type SlashCommand<TClient = ClientClass> = {
 	>;
 	modals?: Record<string, ComponentHandler<ModalSubmitInteraction, TClient>>;
 };
+
+export function defineSlashCommand<TClient = ClientClass>(
+	cmd: SlashCommand<TClient>,
+): SlashCommand<TClient> {
+	return cmd;
+}

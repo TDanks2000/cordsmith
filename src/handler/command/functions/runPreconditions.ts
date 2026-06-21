@@ -5,6 +5,7 @@ import type {
 } from "../../@types/precondition";
 import { BotPermissions } from "./preconditions/BotPermissions";
 import { Cooldown } from "./preconditions/Cooldown";
+import { DMOnly } from "./preconditions/DMOnly";
 import { GuildOnly } from "./preconditions/GuildOnly";
 import { OwnerOnly } from "./preconditions/OwnerOnly";
 import { UserPermissions } from "./preconditions/UserPermissions";
@@ -15,13 +16,15 @@ import { UserPermissions } from "./preconditions/UserPermissions";
  *
  * 1. OwnerOnly     — bail early for non-owners before any other check
  * 2. GuildOnly     — bail before guild-specific checks (perms, cooldowns)
- * 3. Cooldown      — check + set cooldown before executing
- * 4. UserPermissions
- * 5. BotPermissions
+ * 3. DMOnly        — bail before guild-specific checks (perms, cooldowns)
+ * 4. Cooldown      — check + set cooldown before executing
+ * 5. UserPermissions
+ * 6. BotPermissions
  */
 const BUILT_INS: Precondition[] = [
 	OwnerOnly,
 	GuildOnly,
+	DMOnly,
 	Cooldown,
 	UserPermissions,
 	BotPermissions,

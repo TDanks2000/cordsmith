@@ -9,8 +9,16 @@ import {
 
 export type RegisterMode =
 	| { mode: "guild"; guildId: string }
+	| { mode: "guilds"; guildIds: string[] }
 	| { mode: "global" }
 	| { mode: "none" };
+
+type RegistrationTarget = {
+	scope: RegisterScope;
+	label: string;
+	route: `/${string}`;
+	success: string;
+};
 
 export async function registerCommands(options: {
 	token: string;
@@ -49,92 +57,84 @@ export async function registerCommands(options: {
 		return;
 	}
 
-	const scope: RegisterScope =
-		where.mode === "global"
-			? { mode: "global" }
-			: { mode: "guild", guildId: where.guildId };
-
-	const scopeLabel =
-		scope.mode === "global" ? "global" : `guild ${scope.guildId}`;
-
 	// Single REST client instance shared across all registration paths below.
 	const rest = new REST({ version: "10" }).setToken(token);
 
-	if (useCache && !force) {
+	const targets: RegistrationTarget[] =
+		where.mode === "global"
+			? [
+					{
+						scope: { mode: "global" },
+						label: "global",
+						route: Routes.applicationCommands(applicationId),
+						success: `Registered ${commandJson.length} global application command(s). (Propagation can take time)`,
+					},
+				]
+			: (where.mode === "guild" ? [where.guildId] : where.guildIds).map(
+					(guildId) => ({
+						scope: { mode: "guild", guildId },
+						label: `guild ${guildId}`,
+						route: Routes.applicationGuildCommands(
+							applicationId,
+							guildId,
+						),
+						success: `Registered ${commandJson.length} guild application command(s) to ${guildId}.`,
+					}),
+				);
+
+	async function registerTarget(target: RegistrationTarget): Promise<void> {
 		const nextHash = hashCommandJson(commandJson);
-		const prevHash = await readCachedHash({
-			scope,
+
+		if (useCache && !force) {
+			const prevHash = await readCachedHash({
+				scope: target.scope,
+				applicationId,
+				envKey,
+			});
+
+			if (prevHash && prevHash === nextHash) {
+				logger.info(
+					`Command registration skipped (no changes) for ${target.label}.`,
+				);
+				return;
+			}
+
+			logger.info(`Commands changed; registering for ${target.label}...`);
+		} else if (force) {
+			logger.warn(
+				`Force register enabled; registering for ${target.label}...`,
+			);
+		} else {
+			logger.info(
+				`Registering for ${target.label} (cache disabled)...`,
+			);
+		}
+
+		await rest.put(target.route, { body: commandJson });
+
+		await writeCachedHash({
+			scope: target.scope,
 			applicationId,
 			envKey,
+			hash: nextHash,
 		});
 
-		if (prevHash && prevHash === nextHash) {
-			logger.info(
-				`Command registration skipped (no changes) for ${scopeLabel}.`,
-			);
-			return;
-		}
+		logger.info(target.success);
+	}
 
-		logger.info(`Commands changed; registering for ${scopeLabel}...`);
-
-		if (where.mode === "guild") {
-			await rest.put(
-				Routes.applicationGuildCommands(applicationId, where.guildId),
-				{ body: commandJson },
-			);
-
-			await writeCachedHash({ scope, applicationId, envKey, hash: nextHash });
-
-			logger.info(
-				`Registered ${commandJson.length} guild application command(s) to ${where.guildId}.`,
-			);
-			return;
-		}
-
-		await rest.put(Routes.applicationCommands(applicationId), {
-			body: commandJson,
-		});
-
-		await writeCachedHash({ scope, applicationId, envKey, hash: nextHash });
-
-		logger.info(
-			`Registered ${commandJson.length} global application command(s). (Propagation can take time)`,
-		);
+	if (where.mode !== "guilds") {
+		await registerTarget(targets[0]!);
 		return;
 	}
 
-	// force=true intentionally bypasses the hash equality check and always
-	// registers, even when commands are unchanged. We still write the hash
-	// afterwards so the next normal startup can benefit from caching.
-	if (force) {
-		logger.warn(`Force register enabled; registering for ${scopeLabel}...`);
-	} else {
-		logger.info(`Registering for ${scopeLabel} (cache disabled)...`);
+	for (const target of targets) {
+		try {
+			await registerTarget(target);
+		} catch (err) {
+			logger.error(
+				`Failed to register commands for ${target.label}; continuing.`,
+				err,
+			);
+		}
 	}
-
-	if (where.mode === "guild") {
-		await rest.put(
-			Routes.applicationGuildCommands(applicationId, where.guildId),
-			{ body: commandJson },
-		);
-
-		const nextHash = hashCommandJson(commandJson);
-		await writeCachedHash({ scope, applicationId, envKey, hash: nextHash });
-
-		logger.info(
-			`Registered ${commandJson.length} guild application command(s) to ${where.guildId}.`,
-		);
-		return;
-	}
-
-	await rest.put(Routes.applicationCommands(applicationId), {
-		body: commandJson,
-	});
-
-	const nextHash = hashCommandJson(commandJson);
-	await writeCachedHash({ scope, applicationId, envKey, hash: nextHash });
-
-	logger.info(
-		`Registered ${commandJson.length} global application command(s). (Propagation can take time)`,
-	);
 }

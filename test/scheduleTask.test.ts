@@ -35,4 +35,30 @@ describe("scheduleTask", () => {
 		expect(runCount).toBeGreaterThanOrEqual(2);
 		expect(overlapped).toBe(false);
 	});
+
+	test("retries a failed task before the next scheduled run", async () => {
+		let runCount = 0;
+
+		const handle = scheduleTask(
+			{
+				name: "retry",
+				filePath: "retry.ts",
+				intervalMs: 100,
+				runOnStart: true,
+				retry: { attempts: 2, delayMs: 1 },
+				async execute() {
+					runCount += 1;
+					if (runCount < 3) {
+						throw new Error("temporary");
+					}
+				},
+			},
+			{ client: {} as never },
+		);
+
+		await sleep(25);
+		handle.cancel();
+
+		expect(runCount).toBe(3);
+	});
 });

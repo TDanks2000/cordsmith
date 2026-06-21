@@ -7,6 +7,7 @@ import type { ClientClass } from "../../structure/Client";
 
 export type ContextMenuMeta = {
 	guildOnly?: boolean;
+	dmOnly?: boolean;
 	ownerOnly?: boolean;
 	cooldownMs?: number;
 	cooldownScope?: "user" | "guild" | "global";

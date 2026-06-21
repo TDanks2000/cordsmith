@@ -5,6 +5,8 @@ import type { Precondition } from "../@types/precondition";
 import {
 	type AttachedInteractionListener,
 	attachInteractionListener,
+	type InteractionErrorMessages,
+	type SlashCommandHooks,
 } from "./functions/attachInteractionListener";
 import { CooldownStore } from "./functions/cooldowns";
 import { loadCommandsFromDisk } from "./functions/loadCommands";
@@ -40,6 +42,15 @@ export type CommandHandlerOptions = {
 	 * If omitted, a fresh registry is created for this handler only.
 	 */
 	preconditionRegistry?: Map<string, Precondition>;
+
+	errorMessages?: InteractionErrorMessages;
+
+	onError?: (
+		err: unknown,
+		ctx: { interaction: any; commandName: string },
+	) => Promise<void> | void;
+
+	hooks?: SlashCommandHooks;
 };
 
 export class CommandHandler {
@@ -52,6 +63,9 @@ export class CommandHandler {
 	private readonly ownerIds: Set<string>;
 	private readonly cooldowns = new CooldownStore();
 	private readonly registrationCache: boolean;
+	private readonly errorMessages: CommandHandlerOptions["errorMessages"];
+	private readonly onError: CommandHandlerOptions["onError"];
+	private readonly hooks: CommandHandlerOptions["hooks"];
 
 	/**
 	 * Registry of custom preconditions, keyed by name.
@@ -74,6 +88,9 @@ export class CommandHandler {
 			: parseOwnerIds(Bun.env.DISCORD_OWNER_IDS);
 
 		this.registrationCache = options.registrationCache ?? true;
+		this.errorMessages = options.errorMessages;
+		this.onError = options.onError;
+		this.hooks = options.hooks;
 
 		// Use a shared registry if provided (e.g. from HandlerManager),
 		// otherwise create a fresh one scoped to this handler.
@@ -133,6 +150,9 @@ export class CommandHandler {
 			ownerIds: this.ownerIds,
 			cooldowns: this.cooldowns,
 			preconditionRegistry: this.preconditionRegistry,
+			errorMessages: this.errorMessages,
+			onError: this.onError,
+			hooks: this.hooks,
 		});
 
 		if (this.registerConfig) {

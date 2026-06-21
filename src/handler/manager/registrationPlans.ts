@@ -20,6 +20,8 @@ function whereKey(where: RegisterMode): string {
 			return "global";
 		case "guild":
 			return `guild:${where.guildId}`;
+		case "guilds":
+			return `guilds:${where.guildIds.slice().sort().join(",")}`;
 	}
 }
 

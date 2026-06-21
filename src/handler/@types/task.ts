@@ -42,6 +42,11 @@ export type TaskModule<TClient = ClientClass> = {
 	 */
 	enabled?: boolean;
 
+	retry?: {
+		attempts: number;
+		delayMs: number;
+	};
+
 	execute: (ctx: TaskContext<TClient>) => Promise<void>;
 };
 
@@ -51,6 +56,7 @@ export type LoadedTask<TClient = ClientClass> = {
 	intervalMs?: number;
 	cron?: string;
 	runOnStart: boolean;
+	retry?: { attempts: number; delayMs: number };
 	execute: TaskModule<TClient>["execute"];
 };
 

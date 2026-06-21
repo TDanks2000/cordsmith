@@ -32,13 +32,42 @@ export function scheduleTask(task: LoadedTask, ctx: TaskContext): TaskHandle {
 		if (running) return;
 
 		running = true;
-		try {
-			await task.execute(ctx);
-		} catch (err) {
-			logger.error(`Error in task "${task.name}"`, err);
-		} finally {
-			running = false;
+
+		const retry = task.retry;
+		const maxAttempts = Math.max(0, retry?.attempts ?? 0) + 1;
+		let lastErr: unknown;
+
+		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+			try {
+				await task.execute(ctx);
+				running = false;
+				return;
+			} catch (err) {
+				lastErr = err;
+
+				if (attempt < maxAttempts) {
+					logger.warn(
+						`Task "${task.name}" failed (attempt ${attempt}/${maxAttempts}), retrying in ${retry?.delayMs ?? 0}ms`,
+						{ error: String(err) },
+					);
+					await new Promise((resolve) =>
+						setTimeout(resolve, retry?.delayMs ?? 0),
+					);
+					if (cancelled) break;
+				}
+			}
 		}
+
+		if (cancelled) {
+			running = false;
+			return;
+		}
+
+		logger.error(
+			`Task "${task.name}" failed after ${maxAttempts} attempt(s)`,
+			lastErr,
+		);
+		running = false;
 	}
 
 	function cancelTimer(): void {

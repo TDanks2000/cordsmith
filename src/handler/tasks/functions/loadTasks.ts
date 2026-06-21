@@ -64,6 +64,7 @@ export async function loadTasksFromDisk(options: {
 			intervalMs: mod.intervalMs,
 			cron: mod.cron,
 			runOnStart: mod.runOnStart ?? false,
+			retry: mod.retry,
 			execute: mod.execute,
 		});
 

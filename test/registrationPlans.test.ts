@@ -56,4 +56,33 @@ describe("combineRegistrationPlans", () => {
 
 		expect(combined).toHaveLength(2);
 	});
+
+	test("combines payloads for the same multi-guild Discord scope", () => {
+		const combined = combineRegistrationPlans([
+			{
+				register: {
+					token: "token",
+					applicationId: "app",
+					where: { mode: "guilds", guildIds: ["b", "a"] },
+				},
+				commandJson: [{ name: "slash" }],
+				cache: true,
+			},
+			{
+				register: {
+					token: "token",
+					applicationId: "app",
+					where: { mode: "guilds", guildIds: ["a", "b"] },
+				},
+				commandJson: [{ name: "menu" }],
+				cache: true,
+			},
+		]);
+
+		expect(combined).toHaveLength(1);
+		expect(combined[0]?.commandJson).toEqual([
+			{ name: "slash" },
+			{ name: "menu" },
+		]);
+	});
 });

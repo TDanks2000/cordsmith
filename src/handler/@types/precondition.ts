@@ -1,16 +1,24 @@
-import type { ChatInputCommandInteraction } from "discord.js";
+import type {
+	ChatInputCommandInteraction,
+	MessageContextMenuCommandInteraction,
+	UserContextMenuCommandInteraction,
+} from "discord.js";
 import type { ClientClass } from "../../structure/Client";
 import type { CooldownStore } from "../command/functions/cooldowns";
 import type { CommandMeta } from "./command";
+import type { ContextMenuMeta } from "./contextMenu";
 
 export type PreconditionResult =
 	| { ok: true }
 	| { ok: false; message: string; ephemeral?: boolean };
 
 export type PreconditionContext = {
-	interaction: ChatInputCommandInteraction;
+	interaction:
+		| ChatInputCommandInteraction
+		| UserContextMenuCommandInteraction
+		| MessageContextMenuCommandInteraction;
 	client: ClientClass;
-	meta: CommandMeta;
+	meta: CommandMeta | ContextMenuMeta;
 	ownerIds: Set<string>;
 	cooldowns: CooldownStore;
 };

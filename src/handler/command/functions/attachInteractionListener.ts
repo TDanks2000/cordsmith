@@ -1,4 +1,5 @@
 import type {
+	ChatInputCommandInteraction,
 	Collection,
 	InteractionReplyOptions,
 	MessageComponentInteraction,
@@ -6,7 +7,7 @@ import type {
 } from "discord.js";
 import type { ClientClass } from "../../../structure/Client";
 import { logger } from "../../../utils";
-import type { SlashCommand } from "../../@types/command";
+import type { CommandContext, SlashCommand } from "../../@types/command";
 import type { Precondition } from "../../@types/precondition";
 import type { CooldownStore } from "./cooldowns";
 import { parseCustomId } from "./customId";
@@ -74,6 +75,37 @@ type ComponentCtx<T> = {
 	payload?: string;
 };
 
+export type InteractionErrorMessages = {
+	genericError?: string;
+	componentOwnerOnly?: string;
+	missingPayload?: string;
+};
+
+export type SlashCommandHooks = {
+	beforeExecute?: (
+		ctx: CommandContext<ChatInputCommandInteraction>,
+	) => Promise<boolean | void> | boolean | void;
+	afterExecute?: (
+		ctx: CommandContext<ChatInputCommandInteraction>,
+	) => Promise<void> | void;
+	onCommandError?: (
+		err: unknown,
+		ctx: CommandContext<ChatInputCommandInteraction>,
+	) => Promise<void> | void;
+};
+
+async function replyGenericIfNeeded(
+	interaction: Repliable,
+	content: string,
+): Promise<void> {
+	if (interaction.deferred || interaction.replied) return;
+
+	await replySafe(interaction, {
+		content,
+		ephemeral: true,
+	});
+}
+
 /**
  * Shared routing logic for button, select menu, and modal interactions.
  *
@@ -91,8 +123,10 @@ async function routeComponentInteraction<
 		action: string,
 	) => ((ctx: ComponentCtx<T>) => Promise<void>) | undefined;
 	label: string;
+	errorMessages?: InteractionErrorMessages;
 }): Promise<void> {
-	const { interaction, commands, client, getHandler, label } = options;
+	const { interaction, commands, client, getHandler, label, errorMessages } =
+		options;
 
 	const parsed = parseCustomId(interaction.customId);
 	if (!parsed.ok) return;
@@ -111,7 +145,10 @@ async function routeComponentInteraction<
 
 	if (!ownerCheck.ok) {
 		await replySafe(interaction, {
-			content: ownerCheck.message,
+			content:
+				parsed.payload === undefined
+					? (errorMessages?.missingPayload ?? ownerCheck.message)
+					: (errorMessages?.componentOwnerOnly ?? ownerCheck.message),
 			ephemeral: true,
 		});
 		return;
@@ -139,7 +176,7 @@ async function routeComponentInteraction<
 		);
 
 		await replySafe(interaction, {
-			content: "Something went wrong.",
+			content: errorMessages?.genericError ?? "Something went wrong.",
 			ephemeral: true,
 		});
 	}
@@ -151,9 +188,26 @@ export function attachInteractionListener(options: {
 	ownerIds: Set<string>;
 	cooldowns: CooldownStore;
 	preconditionRegistry: Map<string, Precondition>;
+	errorMessages?: InteractionErrorMessages;
+	onError?: (
+		err: unknown,
+		ctx: { interaction: any; commandName: string },
+	) => Promise<void> | void;
+	hooks?: SlashCommandHooks;
 }): AttachedInteractionListener {
-	const { client, commands, ownerIds, cooldowns, preconditionRegistry } =
-		options;
+	const {
+		client,
+		commands,
+		ownerIds,
+		cooldowns,
+		preconditionRegistry,
+		errorMessages,
+		onError,
+		hooks,
+	} = options;
+	const genericError =
+		errorMessages?.genericError ??
+		"Something went wrong while running that command.";
 
 	const fn = async (interaction: any) => {
 		// ---- Autocomplete routing ----
@@ -181,6 +235,7 @@ export function attachInteractionListener(options: {
 				client,
 				getHandler: (cmd, action) => cmd.buttons?.[action],
 				label: "button",
+				errorMessages,
 			});
 			return;
 		}
@@ -193,6 +248,7 @@ export function attachInteractionListener(options: {
 				client,
 				getHandler: (cmd, action) => cmd.selectMenus?.[action],
 				label: "select menu",
+				errorMessages,
 			});
 			return;
 		}
@@ -205,6 +261,7 @@ export function attachInteractionListener(options: {
 				client,
 				getHandler: (cmd, action) => cmd.modals?.[action],
 				label: "modal",
+				errorMessages,
 			});
 			return;
 		}
@@ -243,7 +300,32 @@ export function attachInteractionListener(options: {
 		}
 
 		try {
-			await command.execute({ interaction, client });
+			const ctx = { interaction, client };
+			try {
+				const shouldContinue = await hooks?.beforeExecute?.(ctx);
+				if (shouldContinue === false) return;
+			} catch (err) {
+				logger.error(
+					`Error in beforeExecute hook for "${interaction.commandName}"`,
+					err,
+				);
+				return;
+			}
+
+			if (command.subcommands) {
+				const subName = interaction.options.getSubcommand(false);
+				const groupName = interaction.options.getSubcommandGroup(false);
+				const key = groupName ? `${groupName}/${subName}` : subName;
+
+				if (key && command.subcommands[key]) {
+					await command.subcommands[key](ctx);
+					await hooks?.afterExecute?.(ctx);
+					return;
+				}
+			}
+
+			await command.execute(ctx);
+			await hooks?.afterExecute?.(ctx);
 		} catch (err) {
 			if (isUserError(err)) {
 				await replySafe(interaction, {
@@ -255,10 +337,28 @@ export function attachInteractionListener(options: {
 
 			logger.error(`Error executing "${interaction.commandName}"`, err);
 
-			await replySafe(interaction, {
-				content: "Something went wrong while running that command.",
-				ephemeral: true,
-			});
+			try {
+				await hooks?.onCommandError?.(err, { interaction, client });
+			} catch (hookErr) {
+				logger.error(
+					`Error in onCommandError hook for "${interaction.commandName}"`,
+					hookErr,
+				);
+			}
+
+			try {
+				await onError?.(err, {
+					interaction,
+					commandName: interaction.commandName,
+				});
+			} catch (onErrorErr) {
+				logger.error(
+					`Error in onError callback for "${interaction.commandName}"`,
+					onErrorErr,
+				);
+			}
+
+			await replyGenericIfNeeded(interaction, genericError);
 		}
 	};
 

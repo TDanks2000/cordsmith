@@ -1,29 +1,16 @@
 import type {
-	MessageContextMenuCommandInteraction,
-	UserContextMenuCommandInteraction,
-} from "discord.js";
-import type { ClientClass } from "../../../structure/Client";
-import type { ContextMenuMeta } from "../../@types/contextMenu";
-import type {
 	Precondition,
+	PreconditionContext,
 	PreconditionResult,
 } from "../../@types/precondition";
-import type { CooldownStore } from "../../command/functions/cooldowns";
 import { BotPermissions } from "../../command/functions/preconditions/BotPermissions";
 import { Cooldown } from "../../command/functions/preconditions/Cooldown";
+import { DMOnly } from "../../command/functions/preconditions/DMOnly";
 import { GuildOnly } from "../../command/functions/preconditions/GuildOnly";
 import { OwnerOnly } from "../../command/functions/preconditions/OwnerOnly";
 import { UserPermissions } from "../../command/functions/preconditions/UserPermissions";
 
-export type ContextMenuPreconditionContext = {
-	interaction:
-		| UserContextMenuCommandInteraction
-		| MessageContextMenuCommandInteraction;
-	client: ClientClass;
-	meta: ContextMenuMeta;
-	ownerIds: Set<string>;
-	cooldowns: CooldownStore;
-};
+export type ContextMenuPreconditionContext = PreconditionContext;
 
 export type ContextMenuPreconditionFailure = {
 	message: string;
@@ -42,6 +29,7 @@ export type RunContextMenuPreconditionsResult =
 const BUILT_INS: Precondition[] = [
 	OwnerOnly,
 	GuildOnly,
+	DMOnly,
 	Cooldown,
 	UserPermissions,
 	BotPermissions,
@@ -62,13 +50,7 @@ export async function runContextMenuPreconditions(options: {
 
 	// Run built-ins first, in the same order as the slash command path
 	for (const precondition of BUILT_INS) {
-		const result: PreconditionResult = await precondition.run({
-			interaction: ctx.interaction as never,
-			client: ctx.client,
-			meta: ctx.meta as never,
-			ownerIds: ctx.ownerIds,
-			cooldowns: ctx.cooldowns,
-		});
+		const result: PreconditionResult = await precondition.run(ctx);
 
 		if (!result.ok) {
 			return {
@@ -91,13 +73,7 @@ export async function runContextMenuPreconditions(options: {
 			);
 		}
 
-		const result: PreconditionResult = await precondition.run({
-			interaction: ctx.interaction as never,
-			client: ctx.client,
-			meta: ctx.meta as never,
-			ownerIds: ctx.ownerIds,
-			cooldowns: ctx.cooldowns,
-		});
+		const result: PreconditionResult = await precondition.run(ctx);
 
 		if (!result.ok) {
 			return {
