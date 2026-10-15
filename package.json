@@ -1,6 +1,6 @@
 {
 	"name": "cordsmith",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "A Bun-first Discord.js handler for slash commands, context menus, events, and scheduled tasks.",
 	"author": "TDanks2000",
 	"license": "MIT",
