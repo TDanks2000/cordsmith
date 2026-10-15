@@ -1,8 +1,9 @@
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import { logger } from "../../../utils";
 import type { LoadedTask, TaskModule } from "../../@types/task";
 import { discoverModuleFiles } from "../../utils/files";
+import { importModules } from "../../utils/modules";
+import { parseCron } from "./parseCron";
 
 function isTaskModule(mod: unknown): mod is TaskModule {
 	if (!mod || typeof mod !== "object") return false;
@@ -15,10 +16,7 @@ function isTaskModule(mod: unknown): mod is TaskModule {
 	const hasCron = typeof m.cron === "string" && m.cron.trim().length > 0;
 
 	// Must have exactly one scheduling strategy
-	if (!hasInterval && !hasCron) return false;
-	if (hasInterval && hasCron) return false;
-
-	return true;
+	return hasInterval !== hasCron;
 }
 
 function nameFromFilePath(tasksDir: string, filePath: string): string {
@@ -35,14 +33,11 @@ export async function loadTasksFromDisk(options: {
 		dir: options.tasksDir,
 		extensions: options.extensions,
 	});
+
 	const tasks: LoadedTask[] = [];
-	let loaded = 0;
+	const names = new Set<string>();
 
-	for (const filePath of files) {
-		const fileUrl = pathToFileURL(filePath).href;
-		const imported = await import(fileUrl);
-		const mod = imported.default;
-
+	for (const { filePath, mod } of await importModules(files)) {
 		if (!isTaskModule(mod)) {
 			logger.warn(`Skipping invalid task module: ${filePath}`);
 			continue;
@@ -52,12 +47,24 @@ export async function loadTasksFromDisk(options: {
 
 		const name = mod.name ?? nameFromFilePath(rootDir, filePath);
 
-		// Bug fix: duplicate names caused TaskHandler.cancel(name) to only
-		// ever find the first match, leaving the second task running silently.
-		if (tasks.some((t) => t.name === name)) {
+		// Duplicate names would make TaskHandler.cancel(name) ambiguous.
+		if (names.has(name)) {
 			throw new Error(`Duplicate task name "${name}" detected: ${filePath}`);
 		}
 
+		// Validate cron expressions at load time so a typo fails fast with the
+		// offending file in the message, before any task has been scheduled.
+		if (mod.cron) {
+			try {
+				parseCron(mod.cron);
+			} catch (cause) {
+				throw new Error(`Invalid cron for task "${name}" (${filePath})`, {
+					cause,
+				});
+			}
+		}
+
+		names.add(name);
 		tasks.push({
 			name,
 			filePath,
@@ -67,10 +74,8 @@ export async function loadTasksFromDisk(options: {
 			retry: mod.retry,
 			execute: mod.execute,
 		});
-
-		loaded += 1;
 	}
 
-	logger.info(`Loaded ${loaded} task(s) from ${rootDir}`);
+	logger.info(`Loaded ${tasks.length} task(s) from ${rootDir}`);
 	return tasks;
 }

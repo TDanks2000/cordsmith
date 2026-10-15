@@ -62,3 +62,51 @@ describe("scheduleTask", () => {
 		expect(runCount).toBe(3);
 	});
 });
+
+describe("scheduleTask long delays", () => {
+	test("does not fire cron tasks whose next tick is beyond setTimeout's limit", async () => {
+		let runs = 0;
+
+		// Yearly: the next tick is usually > 24.8 days away. Before the fix the
+		// overflowed timer fired immediately and then looped.
+		const handle = scheduleTask(
+			{
+				name: "rare",
+				filePath: "rare.ts",
+				cron: "@yearly",
+				runOnStart: false,
+				async execute() {
+					runs += 1;
+				},
+			},
+			{ client: {} as never },
+		);
+
+		await sleep(30);
+		handle.cancel();
+
+		expect(runs).toBe(0);
+	});
+
+	test("runNow executes immediately and skips once cancelled", async () => {
+		let runs = 0;
+		const handle = scheduleTask(
+			{
+				name: "manual",
+				filePath: "manual.ts",
+				intervalMs: 60_000,
+				runOnStart: false,
+				async execute() {
+					runs += 1;
+				},
+			},
+			{ client: {} as never },
+		);
+
+		await handle.runNow();
+		handle.cancel();
+		await handle.runNow();
+
+		expect(runs).toBe(1);
+	});
+});

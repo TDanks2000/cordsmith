@@ -59,9 +59,9 @@ export type ContextMenuCommand<TClient = ClientClass> =
  *   async execute({ interaction, client }) {}
  * })
  */
-export function defineUserContextMenu(
-	cmd: Omit<UserContextMenuCommand, "type">,
-): UserContextMenuCommand {
+export function defineUserContextMenu<TClient = ClientClass>(
+	cmd: Omit<UserContextMenuCommand<TClient>, "type">,
+): UserContextMenuCommand<TClient> {
 	return { ...cmd, type: "user" };
 }
 
@@ -74,8 +74,8 @@ export function defineUserContextMenu(
  *   async execute({ interaction, client }) {}
  * })
  */
-export function defineMessageContextMenu(
-	cmd: Omit<MessageContextMenuCommand, "type">,
-): MessageContextMenuCommand {
+export function defineMessageContextMenu<TClient = ClientClass>(
+	cmd: Omit<MessageContextMenuCommand<TClient>, "type">,
+): MessageContextMenuCommand<TClient> {
 	return { ...cmd, type: "message" };
 }

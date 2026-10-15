@@ -57,6 +57,33 @@ export class CooldownStore {
 		return remaining;
 	}
 
+	/**
+	 * Atomically check and start a cooldown in a single lookup.
+	 *
+	 * Returns 0 if the caller may proceed (the cooldown has now been started),
+	 * or the remaining milliseconds if they are still on cooldown.
+	 */
+	public consume(
+		commandName: string,
+		scope: CooldownScope,
+		userId: string,
+		guildId: string | null,
+		cooldownMs: number,
+	): number {
+		const key = this.buildKey(commandName, scope, userId, guildId);
+		const now = Date.now();
+		const end = this.until.get(key);
+
+		if (end !== undefined && end > now) return end - now;
+
+		// Delete first so the refreshed entry moves to the end of insertion
+		// order, keeping "oldest first" eviction accurate.
+		this.until.delete(key);
+		this.until.set(key, now + cooldownMs);
+		this.pruneIfNeeded(now);
+		return 0;
+	}
+
 	public set(
 		commandName: string,
 		scope: CooldownScope,
@@ -66,6 +93,7 @@ export class CooldownStore {
 	): void {
 		const now = Date.now();
 		const key = this.buildKey(commandName, scope, userId, guildId);
+		this.until.delete(key);
 		this.until.set(key, now + cooldownMs);
 		this.pruneIfNeeded(now);
 	}

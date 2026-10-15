@@ -1,8 +1,8 @@
-import { pathToFileURL } from "node:url";
 import { Collection } from "discord.js";
 import { logger } from "../../../utils";
 import type { SlashCommand } from "../../@types/command";
 import { discoverModuleFiles } from "../../utils/files";
+import { importModules } from "../../utils/modules";
 
 type LoadResult = {
 	commands: Collection<string, SlashCommand>;
@@ -12,14 +12,15 @@ function isSlashCommandModule(mod: unknown): mod is SlashCommand {
 	if (!mod || typeof mod !== "object") return false;
 
 	const m = mod as Partial<SlashCommand>;
+	const name = (m.data as { name?: unknown } | undefined)?.name;
+
 	return (
 		typeof m.execute === "function" &&
-		typeof m.data === "object" &&
 		typeof m.data?.toJSON === "function" &&
 		// Ensure data.name is present and non-empty so we never register a
 		// command under "undefined" or produce a confusing duplicate-name error
-		typeof (m.data as { name?: unknown }).name === "string" &&
-		((m.data as { name?: unknown }).name as string).length > 0
+		typeof name === "string" &&
+		name.length > 0
 	);
 }
 
@@ -33,19 +34,14 @@ export async function loadCommandsFromDisk(options: {
 	});
 
 	const commands = new Collection<string, SlashCommand>();
-	let loaded = 0;
 
-	for (const filePath of files) {
-		const fileUrl = pathToFileURL(filePath).href;
-		const imported = await import(fileUrl);
-		const cmd = imported.default;
-
-		if (!isSlashCommandModule(cmd)) {
+	for (const { filePath, mod } of await importModules(files)) {
+		if (!isSlashCommandModule(mod)) {
 			logger.warn(`Skipping invalid command module: ${filePath}`);
 			continue;
 		}
 
-		const name = cmd.data.name;
+		const name = mod.data.name;
 
 		if (commands.has(name)) {
 			throw new Error(
@@ -53,10 +49,9 @@ export async function loadCommandsFromDisk(options: {
 			);
 		}
 
-		commands.set(name, cmd);
-		loaded += 1;
+		commands.set(name, mod);
 	}
 
-	logger.info(`Loaded ${loaded} slash command(s) from ${rootDir}`);
+	logger.info(`Loaded ${commands.size} slash command(s) from ${rootDir}`);
 	return { commands };
 }

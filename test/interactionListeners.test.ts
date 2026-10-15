@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import { EventEmitter } from "node:events";
-import { Collection } from "discord.js";
+import { Collection, MessageFlags } from "discord.js";
 import { attachInteractionListener } from "../src/handler/command/functions/attachInteractionListener";
 import { CooldownStore } from "../src/handler/command/functions/cooldowns";
 import { attachContextMenuListener } from "../src/handler/context/functions/attachContextMenuListener";
@@ -129,7 +129,87 @@ describe("interaction listener attachment", () => {
 		expect(onError).toHaveBeenCalledTimes(1);
 		expect(reply).toHaveBeenCalledWith({
 			content: "Custom failure.",
-			ephemeral: true,
+			flags: MessageFlags.Ephemeral,
 		});
+	});
+});
+
+describe("interaction listener robustness", () => {
+	function chatInput(overrides: Record<string, unknown>) {
+		return {
+			user: { id: "user" },
+			guildId: null,
+			deferred: false,
+			replied: false,
+			followUp: mock(async () => {}),
+			inGuild: () => false,
+			isAutocomplete: () => false,
+			isButton: () => false,
+			isAnySelectMenu: () => false,
+			isModalSubmit: () => false,
+			isChatInputCommand: () => true,
+			options: {
+				getSubcommand: () => null,
+				getSubcommandGroup: () => null,
+			},
+			...overrides,
+		} as never;
+	}
+
+	test("never rejects when the reply itself fails (e.g. expired interaction)", async () => {
+		const attached = attachInteractionListener({
+			client: new EventEmitter() as never,
+			commands: new Collection([
+				[
+					"explode",
+					{
+						data: { name: "explode", toJSON: () => ({}) },
+						async execute() {
+							throw new Error("boom");
+						},
+					},
+				],
+			]),
+			ownerIds: new Set(),
+			cooldowns: new CooldownStore(),
+			preconditionRegistry: new Map(),
+		});
+
+		const interaction = chatInput({
+			commandName: "explode",
+			reply: mock(async () => {
+				throw new Error("Unknown interaction");
+			}),
+		});
+
+		await expect(attached.fn(interaction)).resolves.toBeUndefined();
+	});
+
+	test("an afterExecute hook failure does not send the generic error reply", async () => {
+		const reply = mock(async () => {});
+		const attached = attachInteractionListener({
+			client: new EventEmitter() as never,
+			commands: new Collection([
+				[
+					"ok",
+					{
+						data: { name: "ok", toJSON: () => ({}) },
+						async execute() {},
+					},
+				],
+			]),
+			ownerIds: new Set(),
+			cooldowns: new CooldownStore(),
+			preconditionRegistry: new Map(),
+			hooks: {
+				afterExecute() {
+					throw new Error("hook failed");
+				},
+			},
+		});
+
+		await attached.fn(chatInput({ commandName: "ok", reply }));
+
+		expect(reply).not.toHaveBeenCalled();
 	});
 });

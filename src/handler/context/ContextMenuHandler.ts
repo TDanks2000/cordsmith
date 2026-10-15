@@ -1,4 +1,4 @@
-import { Collection, PermissionsBitField } from "discord.js";
+import { Collection } from "discord.js";
 import type { ClientClass } from "../../structure/Client";
 import type { ContextMenuCommand } from "../@types/contextMenu";
 import type { Precondition } from "../@types/precondition";
@@ -8,9 +8,13 @@ import {
 	type RegisterMode,
 	registerCommands,
 } from "../command/functions/registerCommands";
+import { resolvePreconditions } from "../command/functions/runPreconditions";
+import { serializeForRegistration } from "../utils/registration";
 import {
 	type AttachedContextMenuListener,
 	attachContextMenuListener,
+	type ContextMenuErrorCallback,
+	type ContextMenuErrorMessages,
 } from "./functions/attachContextMenuListener";
 import { loadContextMenusFromDisk } from "./functions/loadContextMenus";
 
@@ -33,6 +37,16 @@ export type ContextMenuHandlerOptions = {
 	 * If true (default), skip REST registration when commands haven't changed.
 	 */
 	registrationCache?: boolean;
+
+	/**
+	 * Optionally pass CommandHandler's precondition registry to share
+	 * custom preconditions across both handlers.
+	 */
+	preconditionRegistry?: Map<string, Precondition>;
+
+	errorMessages?: ContextMenuErrorMessages;
+
+	onError?: ContextMenuErrorCallback;
 };
 
 export class ContextMenuHandler {
@@ -45,6 +59,8 @@ export class ContextMenuHandler {
 	private readonly ownerIds: Set<string>;
 	private readonly cooldowns = new CooldownStore();
 	private readonly registrationCache: boolean;
+	private readonly errorMessages: ContextMenuHandlerOptions["errorMessages"];
+	private readonly onError: ContextMenuHandlerOptions["onError"];
 
 	/**
 	 * Shared precondition registry. If you pass the same Map instance used by
@@ -56,15 +72,7 @@ export class ContextMenuHandler {
 
 	private initialized = false;
 
-	constructor(
-		options: ContextMenuHandlerOptions & {
-			/**
-			 * Optionally pass CommandHandler's precondition registry to share
-			 * custom preconditions across both handlers.
-			 */
-			preconditionRegistry?: Map<string, Precondition>;
-		},
-	) {
+	constructor(options: ContextMenuHandlerOptions) {
 		this.client = options.client;
 		this.contextMenusDir = options.contextMenusDir;
 		this.registerConfig = options.register;
@@ -77,6 +85,8 @@ export class ContextMenuHandler {
 			: parseOwnerIds(Bun.env.DISCORD_OWNER_IDS);
 
 		this.registrationCache = options.registrationCache ?? true;
+		this.errorMessages = options.errorMessages;
+		this.onError = options.onError;
 	}
 
 	/**
@@ -101,6 +111,25 @@ export class ContextMenuHandler {
 	}
 
 	public async init(): Promise<void> {
+		await this.load();
+		this.attach();
+
+		if (this.registerConfig) {
+			await registerCommands({
+				token: this.registerConfig.token,
+				applicationId: this.registerConfig.applicationId,
+				where: this.registerConfig.where,
+				commandJson: this.toRegistrationJson(),
+				cache: this.registrationCache,
+			});
+		}
+	}
+
+	/**
+	 * Load context menus from disk.
+	 * @internal Used by HandlerManager to load handlers concurrently.
+	 */
+	public async load(): Promise<void> {
 		if (this.initialized) {
 			throw new Error("ContextMenuHandler.init() was called more than once.");
 		}
@@ -114,6 +143,23 @@ export class ContextMenuHandler {
 		for (const [name, cmd] of commands) {
 			this.commands.set(name, cmd);
 		}
+	}
+
+	/**
+	 * Attach the interaction listener to the client.
+	 * @internal Used by HandlerManager to load handlers concurrently.
+	 */
+	public attach(): void {
+		if (this.attachedListener) return;
+
+		// Fail fast on unregistered custom preconditions.
+		for (const cmd of this.commands.values()) {
+			resolvePreconditions({
+				meta: cmd.meta,
+				registry: this.preconditionRegistry,
+				commandName: cmd.data.name,
+			});
+		}
 
 		this.attachedListener = attachContextMenuListener({
 			client: this.client,
@@ -121,17 +167,9 @@ export class ContextMenuHandler {
 			ownerIds: this.ownerIds,
 			cooldowns: this.cooldowns,
 			preconditionRegistry: this.preconditionRegistry,
+			errorMessages: this.errorMessages,
+			onError: this.onError,
 		});
-
-		if (this.registerConfig) {
-			await registerCommands({
-				token: this.registerConfig.token,
-				applicationId: this.registerConfig.applicationId,
-				where: this.registerConfig.where,
-				commandJson: this.toRegistrationJson(),
-				cache: this.registrationCache,
-			});
-		}
 	}
 
 	public detach(): void {
@@ -145,28 +183,10 @@ export class ContextMenuHandler {
 	}
 
 	/**
-	 * Serialise to plain JSON for Discord registration.
-	 * Permissions are applied to the JSON object, not the builder,
-	 * so the in-memory store is never mutated as a side effect.
-	 * Sorted by name for a stable hash regardless of load order.
+	 * Serialise to plain JSON for Discord registration, sorted by name for a
+	 * stable hash regardless of load order.
 	 */
 	public toRegistrationJson(): unknown[] {
-		const out: Array<Record<string, unknown>> = [];
-
-		for (const cmd of this.commands.values()) {
-			const json = cmd.data.toJSON() as unknown as Record<string, unknown>;
-
-			const perms = cmd.meta?.defaultMemberPermissions;
-			if (perms && perms.length > 0) {
-				const bitfield = new PermissionsBitField(perms).bitfield;
-				json.default_member_permissions = String(bitfield);
-			}
-
-			out.push(json);
-		}
-
-		return out.sort((a, b) =>
-			String(a.name ?? "").localeCompare(String(b.name ?? "")),
-		);
+		return serializeForRegistration(this.commands.values());
 	}
 }

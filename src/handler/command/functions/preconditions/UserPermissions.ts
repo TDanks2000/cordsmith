@@ -1,12 +1,4 @@
-import type { PermissionsString } from "discord.js";
 import type { Precondition } from "../../../@types/precondition";
-
-function missingPerms(
-	has: ReadonlySet<string>,
-	required: PermissionsString[],
-): PermissionsString[] {
-	return required.filter((p) => !has.has(p));
-}
 
 export const UserPermissions: Precondition = {
 	name: "UserPermissions",
@@ -14,9 +6,7 @@ export const UserPermissions: Precondition = {
 		if (!meta.userPermissions?.length) return { ok: true };
 		if (!interaction.inGuild()) return { ok: true };
 
-		const memberPerms = interaction.memberPermissions;
-		const missing = missingPerms(
-			new Set(memberPerms?.toArray() ?? []),
+		const missing = interaction.memberPermissions.missing(
 			meta.userPermissions,
 		);
 

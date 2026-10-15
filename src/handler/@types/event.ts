@@ -21,17 +21,17 @@ export type EventListenerModule<
  * Helper for better type inference in event files.
  *
  * Usage:
- * export default defineEvent({
- *   name: "ready",
+ * // events/clientReady/announce.ts  (or events/clientReady.ts)
+ * export default defineEvent<"clientReady">({
  *   once: true,
- *   async execute({ client }) {}
+ *   async execute({ client, args: [readyClient] }) {}
  * })
  *
- * Note: "name" is inferred from the folder, not required here; this helper
- * simply improves typing for args and ctx.
+ * Note: the event name is inferred from the folder (or file) name; pass it as
+ * the type parameter to get typed `args`.
  */
-export function defineEvent<K extends EventName>(
-	mod: EventListenerModule<K>,
-): EventListenerModule<K> {
+export function defineEvent<K extends EventName, TClient = ClientClass>(
+	mod: EventListenerModule<K, TClient>,
+): EventListenerModule<K, TClient> {
 	return mod;
 }

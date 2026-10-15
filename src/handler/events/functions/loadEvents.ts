@@ -1,8 +1,8 @@
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import { logger } from "../../../utils";
 import type { EventListenerModule, EventName } from "../../@types/event";
-import { discoverModuleFiles } from "../../utils/files";
+import { compareStrings, discoverModuleFiles } from "../../utils/files";
+import { importModules } from "../../utils/modules";
 
 export type LoadedListener = {
 	filePath: string;
@@ -25,16 +25,21 @@ function isListenerModule(mod: unknown): mod is EventListenerModule {
  * Normalises path separators before splitting so behaviour is consistent on
  * both POSIX and Windows (where path.sep would be "\\").
  *
- * Expected structure: <eventsDir>/<eventName>/[...].ts
+ * Supported structures:
+ *   <eventsDir>/<eventName>/[...].ts  — any number of listeners per event
+ *   <eventsDir>/<eventName>.ts        — a single listener, named by the file
  */
 function getEventNameFromFilePath(
 	eventsDirAbs: string,
 	filePath: string,
 ): string | null {
-	const rel = path.relative(eventsDirAbs, filePath).replace(/\\/g, "/"); // normalise Windows backslashes
-
+	const rel = path.relative(eventsDirAbs, filePath).replace(/\\/g, "/");
 	const parts = rel.split("/").filter(Boolean);
-	return parts[0] ?? null;
+	const first = parts[0];
+	if (!first) return null;
+
+	// A file directly in the root is named after the event: "ready.ts" → "ready"
+	return parts.length === 1 ? first.replace(/\.[^.]+$/, "") : first;
 }
 
 export async function loadEventsFromDisk(options: {
@@ -45,16 +50,15 @@ export async function loadEventsFromDisk(options: {
 		dir: options.eventsDir,
 		extensions: options.extensions,
 	});
+
 	const events: LoadedEvents = new Map();
 	let loaded = 0;
 
-	for (const filePath of files) {
-		const eventNameRaw = getEventNameFromFilePath(rootDir, filePath);
-		if (!eventNameRaw) continue;
-
-		const fileUrl = pathToFileURL(filePath).href;
-		const imported = await import(fileUrl);
-		const mod = imported.default;
+	for (const { filePath, mod } of await importModules(files)) {
+		const eventName = getEventNameFromFilePath(rootDir, filePath) as
+			| EventName
+			| null;
+		if (!eventName) continue;
 
 		if (!isListenerModule(mod)) {
 			logger.warn(`Skipping invalid event listener module: ${filePath}`);
@@ -63,8 +67,6 @@ export async function loadEventsFromDisk(options: {
 
 		if (mod.enabled === false) continue;
 
-		const eventName = eventNameRaw as EventName;
-
 		const listener: LoadedListener = {
 			filePath,
 			once: mod.once ?? false,
@@ -72,19 +74,17 @@ export async function loadEventsFromDisk(options: {
 			execute: mod.execute,
 		};
 
-		const arr = events.get(eventName) ?? [];
-		arr.push(listener);
-		events.set(eventName, arr);
+		const arr = events.get(eventName);
+		if (arr) arr.push(listener);
+		else events.set(eventName, [listener]);
 
 		loaded += 1;
 	}
 
-	for (const [eventName, listeners] of events) {
-		listeners.sort((a, b) => {
-			if (a.order !== b.order) return a.order - b.order;
-			return a.filePath.localeCompare(b.filePath);
-		});
-		events.set(eventName, listeners);
+	for (const listeners of events.values()) {
+		listeners.sort(
+			(a, b) => a.order - b.order || compareStrings(a.filePath, b.filePath),
+		);
 	}
 
 	logger.info(`Loaded ${loaded} event listener file(s) from ${rootDir}`);

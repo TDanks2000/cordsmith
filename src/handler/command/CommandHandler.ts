@@ -1,10 +1,12 @@
-import { Collection, PermissionsBitField } from "discord.js";
+import { Collection } from "discord.js";
 import type { ClientClass } from "../../structure/Client";
 import type { SlashCommand } from "../@types/command";
 import type { Precondition } from "../@types/precondition";
+import { serializeForRegistration } from "../utils/registration";
 import {
 	type AttachedInteractionListener,
 	attachInteractionListener,
+	type InteractionErrorCallback,
 	type InteractionErrorMessages,
 	type SlashCommandHooks,
 } from "./functions/attachInteractionListener";
@@ -15,6 +17,7 @@ import {
 	type RegisterMode,
 	registerCommands,
 } from "./functions/registerCommands";
+import { resolvePreconditions } from "./functions/runPreconditions";
 
 export type CommandHandlerOptions = {
 	client: ClientClass;
@@ -45,10 +48,7 @@ export type CommandHandlerOptions = {
 
 	errorMessages?: InteractionErrorMessages;
 
-	onError?: (
-		err: unknown,
-		ctx: { interaction: any; commandName: string },
-	) => Promise<void> | void;
+	onError?: InteractionErrorCallback;
 
 	hooks?: SlashCommandHooks;
 };
@@ -130,6 +130,25 @@ export class CommandHandler {
 	}
 
 	public async init(): Promise<void> {
+		await this.load();
+		this.attach();
+
+		if (this.registerConfig) {
+			await registerCommands({
+				token: this.registerConfig.token,
+				applicationId: this.registerConfig.applicationId,
+				where: this.registerConfig.where,
+				commandJson: this.toRegistrationJson(),
+				cache: this.registrationCache,
+			});
+		}
+	}
+
+	/**
+	 * Load commands from disk and validate their preconditions.
+	 * @internal Used by HandlerManager to load handlers concurrently.
+	 */
+	public async load(): Promise<void> {
 		if (this.initialized) {
 			throw new Error("CommandHandler.init() was called more than once.");
 		}
@@ -143,6 +162,24 @@ export class CommandHandler {
 		for (const [name, cmd] of commands) {
 			this.commands.set(name, cmd);
 		}
+	}
+
+	/**
+	 * Attach the interaction listener to the client.
+	 * @internal Used by HandlerManager to load handlers concurrently.
+	 */
+	public attach(): void {
+		if (this.attachedListener) return;
+
+		// Fail fast on unregistered custom preconditions at startup rather than
+		// on the first invocation of the offending command.
+		for (const cmd of this.commands.values()) {
+			resolvePreconditions({
+				meta: cmd.meta,
+				registry: this.preconditionRegistry,
+				commandName: cmd.data.name,
+			});
+		}
 
 		this.attachedListener = attachInteractionListener({
 			client: this.client,
@@ -154,16 +191,6 @@ export class CommandHandler {
 			onError: this.onError,
 			hooks: this.hooks,
 		});
-
-		if (this.registerConfig) {
-			await registerCommands({
-				token: this.registerConfig.token,
-				applicationId: this.registerConfig.applicationId,
-				where: this.registerConfig.where,
-				commandJson: this.toRegistrationJson(),
-				cache: this.registrationCache,
-			});
-		}
 	}
 
 	public detach(): void {
@@ -177,36 +204,10 @@ export class CommandHandler {
 	}
 
 	/**
-	 * Serialise commands to plain JSON for Discord registration.
-	 *
-	 * Permissions are applied to the serialised JSON object rather than the
-	 * builder so we never mutate the in-memory command store as a side effect.
-	 *
-	 * Commands are sorted by name before serialisation so the hash is stable
-	 * regardless of the order files are discovered on disk — without this, adding
-	 * a command that glob-sorts before an existing one changes the array order,
-	 * which changes the hash and can cause spurious re-registrations or missed
-	 * registrations depending on the cache state.
+	 * Serialise commands to plain JSON for Discord registration, sorted by name
+	 * so the registration hash is stable regardless of load order.
 	 */
 	public toRegistrationJson(): unknown[] {
-		const out: Array<Record<string, unknown>> = [];
-
-		for (const cmd of this.commands.values()) {
-			const json = cmd.data.toJSON() as unknown as Record<string, unknown>;
-
-			const perms = cmd.meta?.defaultMemberPermissions;
-
-			if (perms && perms.length > 0) {
-				const bitfield = new PermissionsBitField(perms).bitfield;
-				json.default_member_permissions = String(bitfield);
-			}
-
-			out.push(json);
-		}
-
-		// Sort by name for a stable hash across different load orders
-		return out.sort((a, b) =>
-			String(a.name ?? "").localeCompare(String(b.name ?? "")),
-		);
+		return serializeForRegistration(this.commands.values());
 	}
 }

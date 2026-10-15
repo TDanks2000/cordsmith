@@ -1,7 +1,8 @@
+import type { CommandMeta } from "../../@types/command";
+import type { ContextMenuMeta } from "../../@types/contextMenu";
 import type {
 	Precondition,
 	PreconditionContext,
-	PreconditionResult,
 } from "../../@types/precondition";
 import { BotPermissions } from "./preconditions/BotPermissions";
 import { Cooldown } from "./preconditions/Cooldown";
@@ -10,34 +11,90 @@ import { GuildOnly } from "./preconditions/GuildOnly";
 import { OwnerOnly } from "./preconditions/OwnerOnly";
 import { UserPermissions } from "./preconditions/UserPermissions";
 
+type Meta = CommandMeta | ContextMenuMeta;
+
 /**
- * Built-in preconditions applied to every slash command automatically,
- * based on the flags set in command meta. Order matters:
+ * Built-in preconditions, each paired with the meta check that enables it.
+ * Shared by slash commands and context menus. Order matters:
  *
  * 1. OwnerOnly     — bail early for non-owners before any other check
  * 2. GuildOnly     — bail before guild-specific checks (perms, cooldowns)
  * 3. DMOnly        — bail before guild-specific checks (perms, cooldowns)
- * 4. Cooldown      — check + set cooldown before executing
- * 5. UserPermissions
- * 6. BotPermissions
+ * 4. UserPermissions
+ * 5. BotPermissions
+ *
+ * Cooldown is not listed here: it always runs last (after custom
+ * preconditions) because it consumes the cooldown as a side effect, and a
+ * user rejected by any other check should not be put on cooldown.
  */
-const BUILT_INS: Precondition[] = [
-	OwnerOnly,
-	GuildOnly,
-	DMOnly,
-	Cooldown,
-	UserPermissions,
-	BotPermissions,
+const BUILT_INS: ReadonlyArray<[Precondition, (meta: Meta) => boolean]> = [
+	[OwnerOnly, (m) => m.ownerOnly === true],
+	[GuildOnly, (m) => m.guildOnly === true],
+	[DMOnly, (m) => m.dmOnly === true],
+	[UserPermissions, (m) => (m.userPermissions?.length ?? 0) > 0],
+	[BotPermissions, (m) => (m.botPermissions?.length ?? 0) > 0],
 ];
 
-export type RunPreconditionsOptions = {
-	ctx: PreconditionContext;
-	/**
-	 * Custom preconditions registered on CommandHandler, keyed by name.
-	 * Only the ones listed in `ctx.meta.preconditions` will be run.
-	 */
-	registry: Map<string, Precondition>;
-};
+/**
+ * Build the ordered list of preconditions that apply to a command: built-ins
+ * enabled by its meta, then its custom preconditions in declaration order,
+ * then Cooldown. Throws if a custom precondition was never registered.
+ */
+export function resolvePreconditions(options: {
+	meta: Meta | undefined;
+	registry: ReadonlyMap<string, Precondition>;
+	commandName: string;
+}): Precondition[] {
+	const { meta, registry, commandName } = options;
+	if (!meta) return [];
+
+	const chain: Precondition[] = [];
+
+	for (const [precondition, applies] of BUILT_INS) {
+		if (applies(meta)) chain.push(precondition);
+	}
+
+	for (const name of meta.preconditions ?? []) {
+		const precondition = registry.get(name);
+
+		if (!precondition) {
+			throw new Error(
+				`Precondition "${name}" is referenced by "${commandName}" but was never registered.`,
+			);
+		}
+
+		chain.push(precondition);
+	}
+
+	if ((meta.cooldownMs ?? 0) > 0) chain.push(Cooldown);
+
+	return chain;
+}
+
+/**
+ * Returns a memoised resolver: each command's chain is computed once and
+ * reused for every invocation instead of re-walking all built-ins each time.
+ */
+export function createPreconditionResolver(
+	registry: ReadonlyMap<string, Precondition>,
+): (cmd: { data: { name: string }; meta?: Meta }) => Precondition[] {
+	const cache = new WeakMap<object, Precondition[]>();
+
+	return (cmd) => {
+		let chain = cache.get(cmd);
+
+		if (!chain) {
+			chain = resolvePreconditions({
+				meta: cmd.meta,
+				registry,
+				commandName: cmd.data.name,
+			});
+			cache.set(cmd, chain);
+		}
+
+		return chain;
+	};
+}
 
 export type PreconditionFailure = {
 	message: string;
@@ -48,23 +105,19 @@ export type RunPreconditionsResult =
 	| { ok: true }
 	| { ok: false; failure: PreconditionFailure };
 
+const OK: RunPreconditionsResult = { ok: true };
+
 /**
- * Runs all applicable preconditions for a slash command invocation.
- *
- * Built-ins always run first (in a fixed order) based on meta flags.
- * Custom preconditions from `meta.preconditions` run afterwards, in the
- * order they are declared on the command.
- *
- * Returns on the first failure — subsequent preconditions are not evaluated.
+ * Runs a resolved precondition chain, returning on the first failure.
+ * Synchronous preconditions are not awaited, avoiding a microtask per check.
  */
 export async function runPreconditions(
-	options: RunPreconditionsOptions,
+	chain: readonly Precondition[],
+	ctx: PreconditionContext,
 ): Promise<RunPreconditionsResult> {
-	const { ctx, registry } = options;
-
-	// Run built-ins
-	for (const precondition of BUILT_INS) {
-		const result: PreconditionResult = await precondition.run(ctx);
+	for (const precondition of chain) {
+		const pending = precondition.run(ctx);
+		const result = pending instanceof Promise ? await pending : pending;
 
 		if (!result.ok) {
 			return {
@@ -77,30 +130,5 @@ export async function runPreconditions(
 		}
 	}
 
-	// Run custom preconditions declared on this command
-	const customNames = ctx.meta.preconditions ?? [];
-
-	for (const name of customNames) {
-		const precondition = registry.get(name);
-
-		if (!precondition) {
-			throw new Error(
-				`Precondition "${name}" is referenced by command "${ctx.interaction.commandName}" but was never registered on CommandHandler.`,
-			);
-		}
-
-		const result: PreconditionResult = await precondition.run(ctx);
-
-		if (!result.ok) {
-			return {
-				ok: false,
-				failure: {
-					message: result.message,
-					ephemeral: result.ephemeral ?? true,
-				},
-			};
-		}
-	}
-
-	return { ok: true };
+	return OK;
 }

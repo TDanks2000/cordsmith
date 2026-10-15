@@ -37,6 +37,17 @@ function normalizeError(error: unknown): { message: string; stack?: string } {
 const debugEnabled = (): boolean =>
 	String(Bun.env.LOG_LEVEL ?? "").toLowerCase() === "debug";
 
+/**
+ * Route Cordsmith's logs through your own logger (pino, winston, ...).
+ * Any method you omit keeps the default console implementation.
+ *
+ * @example
+ * setLogger({ info: (msg) => pino.info(msg), error: (msg, err) => pino.error(err, msg) });
+ */
+export function setLogger(overrides: Partial<Logger>): void {
+	Object.assign(logger, overrides);
+}
+
 export const logger: Logger = {
 	info(message, context) {
 		console.log(`${timestamp()} [INFO] ${message}${formatContext(context)}`);

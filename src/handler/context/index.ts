@@ -10,4 +10,8 @@ export {
 } from "../@types/contextMenu";
 export type { ContextMenuHandlerOptions } from "./ContextMenuHandler";
 export { ContextMenuHandler } from "./ContextMenuHandler";
+export type {
+	ContextMenuErrorCallback,
+	ContextMenuErrorMessages,
+} from "./functions/attachContextMenuListener";
 export { loadContextMenusFromDisk } from "./functions/loadContextMenus";

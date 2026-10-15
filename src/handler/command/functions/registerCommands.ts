@@ -82,9 +82,10 @@ export async function registerCommands(options: {
 					}),
 				);
 
-	async function registerTarget(target: RegistrationTarget): Promise<void> {
-		const nextHash = hashCommandJson(commandJson);
+	// The payload is identical for every target, so hash it once.
+	const nextHash = hashCommandJson(commandJson);
 
+	async function registerTarget(target: RegistrationTarget): Promise<void> {
 		if (useCache && !force) {
 			const prevHash = await readCachedHash({
 				scope: target.scope,
@@ -127,14 +128,15 @@ export async function registerCommands(options: {
 		return;
 	}
 
-	for (const target of targets) {
-		try {
-			await registerTarget(target);
-		} catch (err) {
+	// Each guild route has its own rate-limit bucket, so register concurrently.
+	const results = await Promise.allSettled(targets.map(registerTarget));
+
+	results.forEach((result, i) => {
+		if (result.status === "rejected") {
 			logger.error(
-				`Failed to register commands for ${target.label}; continuing.`,
-				err,
+				`Failed to register commands for ${targets[i]?.label}; continuing.`,
+				result.reason,
 			);
 		}
-	}
+	});
 }

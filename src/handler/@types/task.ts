@@ -26,6 +26,8 @@ export type TaskModule<TClient = ClientClass> = {
 	 *   "0 * * * *"   — every hour on the hour
 	 *   "30 9 * * 1"  — every Monday at 09:30
 	 *   "* /5 * * * *" — every 5 minutes
+	 *   "0 9 * * MON-FRI" — weekdays at 09:00
+	 *   "@daily"      — every day at midnight
 	 *
 	 * Requires `intervalMs` to be unset.
 	 */
@@ -70,6 +72,8 @@ export type LoadedTask<TClient = ClientClass> = {
  *   async execute({ client }) {}
  * })
  */
-export function defineTask(mod: TaskModule): TaskModule {
+export function defineTask<TClient = ClientClass>(
+	mod: TaskModule<TClient>,
+): TaskModule<TClient> {
 	return mod;
 }

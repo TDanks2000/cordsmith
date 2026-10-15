@@ -16,9 +16,10 @@ export class TaskHandler {
 	private readonly extensions: string[];
 
 	public readonly tasks: LoadedTask[] = [];
-	private readonly handles: TaskHandle[] = [];
+	private readonly handles = new Map<string, TaskHandle>();
 
-	private initialized = false;
+	private loaded = false;
+	private started = false;
 
 	constructor(options: TaskHandlerOptions) {
 		this.client = options.client;
@@ -27,21 +28,38 @@ export class TaskHandler {
 	}
 
 	public async init(): Promise<void> {
-		if (this.initialized) {
+		await this.load();
+		this.start();
+	}
+
+	/**
+	 * Load task modules from disk without scheduling them.
+	 * @internal Used by HandlerManager to load handlers concurrently.
+	 */
+	public async load(): Promise<void> {
+		if (this.loaded) {
 			throw new Error("TaskHandler.init() was called more than once.");
 		}
-		this.initialized = true;
+		this.loaded = true;
 
 		const loaded = await loadTasksFromDisk({
 			tasksDir: this.tasksDir,
 			extensions: this.extensions,
 		});
 
-		for (const task of loaded) {
-			this.tasks.push(task);
+		this.tasks.push(...loaded);
+	}
 
-			const handle = scheduleTask(task, { client: this.client });
-			this.handles.push(handle);
+	/**
+	 * Schedule every loaded task.
+	 * @internal Used by HandlerManager to load handlers concurrently.
+	 */
+	public start(): void {
+		if (this.started) return;
+		this.started = true;
+
+		for (const task of this.tasks) {
+			this.handles.set(task.name, scheduleTask(task, { client: this.client }));
 		}
 	}
 
@@ -50,10 +68,12 @@ export class TaskHandler {
 	 * Useful for graceful shutdown or hot-reload scenarios.
 	 */
 	public cancelAll(): void {
-		for (const handle of this.handles) {
+		if (this.handles.size === 0) return;
+
+		for (const handle of this.handles.values()) {
 			handle.cancel();
 		}
-		this.handles.length = 0;
+		this.handles.clear();
 		logger.info("All tasks cancelled.");
 	}
 
@@ -62,12 +82,23 @@ export class TaskHandler {
 	 * Returns true if found and cancelled, false otherwise.
 	 */
 	public cancel(name: string): boolean {
-		const handle = this.handles.find((h) => h.name === name);
-
+		const handle = this.handles.get(name);
 		if (!handle) return false;
 
 		handle.cancel();
-		this.handles.splice(this.handles.indexOf(handle), 1);
+		this.handles.delete(name);
+		return true;
+	}
+
+	/**
+	 * Run a scheduled task immediately, outside its schedule.
+	 * Returns false if no active task has that name.
+	 */
+	public async run(name: string): Promise<boolean> {
+		const handle = this.handles.get(name);
+		if (!handle) return false;
+
+		await handle.runNow();
 		return true;
 	}
 }

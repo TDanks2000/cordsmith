@@ -5,14 +5,13 @@ import {
 	CommandHandler,
 	type CommandHandlerOptions,
 } from "../command/CommandHandler";
+import { registerCommands } from "../command/functions/registerCommands";
 import {
 	ContextMenuHandler,
 	type ContextMenuHandlerOptions,
 } from "../context/ContextMenuHandler";
 import { EventHandler, type EventHandlerOptions } from "../events/EventHandler";
-import { detachEvents } from "../events/functions/attachEvents";
 import { TaskHandler, type TaskHandlerOptions } from "../tasks/TaskHandler";
-import { registerCommands } from "../command/functions/registerCommands";
 import {
 	combineRegistrationPlans,
 	type HandlerRegistrationPlan,
@@ -58,6 +57,8 @@ export class HandlerManager {
 	public taskHandler?: TaskHandler;
 
 	private initialized = false;
+	private isShutDown = false;
+	private signalListeners: Array<[NodeJS.Signals, () => void]> = [];
 
 	constructor(options: HandlerManagerOptions) {
 		this.client = options.client;
@@ -91,12 +92,12 @@ export class HandlerManager {
 	}
 
 	/**
-	 * Initialises all configured handlers in the correct order:
-	 * 1. Events   — attach listeners first so nothing is missed
-	 * 2. Commands — load slash commands and attach interaction routing
-	 * 3. Context menus — load context menus and attach interaction routing
-	 * 4. Registration — register all application commands in one payload per scope
-	 * 5. Tasks    — start scheduled jobs last (bot should be ready)
+	 * Initialises all configured handlers:
+	 * 1. Load    — every handler's modules are imported concurrently
+	 * 2. Attach  — events first, then commands, then context menus, so
+	 *              listener order is deterministic regardless of load timing
+	 * 3. Register — all application commands in one payload per scope
+	 * 4. Tasks   — start scheduled jobs last
 	 */
 	public async init(): Promise<void> {
 		if (this.initialized) {
@@ -107,18 +108,12 @@ export class HandlerManager {
 		const { client } = this;
 
 		logger.info("HandlerManager initialising...");
-		const startedAt = Date.now();
+		const startedAt = performance.now();
 
-		// 1. Events
 		if (this.eventsConfig) {
-			this.eventHandler = new EventHandler({
-				...this.eventsConfig,
-				client,
-			});
-			await this.eventHandler.init();
+			this.eventHandler = new EventHandler({ ...this.eventsConfig, client });
 		}
 
-		// 2. Commands
 		if (this.commandsConfig) {
 			this.commandHandler = new CommandHandler({
 				...this.commandsConfig,
@@ -126,10 +121,8 @@ export class HandlerManager {
 				register: undefined,
 				preconditionRegistry: this.preconditions,
 			});
-			await this.commandHandler.init();
 		}
 
-		// 3. Context menus
 		if (this.contextMenusConfig) {
 			this.contextMenuHandler = new ContextMenuHandler({
 				...this.contextMenusConfig,
@@ -137,21 +130,35 @@ export class HandlerManager {
 				register: undefined,
 				preconditionRegistry: this.preconditions,
 			});
-			await this.contextMenuHandler.init();
 		}
 
+		if (this.tasksConfig) {
+			this.taskHandler = new TaskHandler({ ...this.tasksConfig, client });
+		}
+
+		// 1. Load everything concurrently — module import is the slowest part
+		//    of startup and the handlers don't depend on each other.
+		await Promise.all([
+			this.eventHandler?.load(),
+			this.commandHandler?.load(),
+			this.contextMenuHandler?.load(),
+			this.taskHandler?.load(),
+		]);
+
+		// 2. Attach in a fixed order
+		this.eventHandler?.attach();
+		this.commandHandler?.attach();
+		this.contextMenuHandler?.attach();
+
+		// 3. Register application commands
 		await this.registerApplicationCommands();
 
 		// 4. Tasks
-		if (this.tasksConfig) {
-			this.taskHandler = new TaskHandler({
-				...this.tasksConfig,
-				client,
-			});
-			await this.taskHandler.init();
-		}
+		this.taskHandler?.start();
 
-		logger.info(`HandlerManager ready in ${Date.now() - startedAt}ms.`);
+		logger.info(
+			`HandlerManager ready in ${Math.round(performance.now() - startedAt)}ms.`,
+		);
 
 		if (this.shutdownSignals) {
 			this.registerShutdownSignals();
@@ -161,36 +168,47 @@ export class HandlerManager {
 	/**
 	 * Gracefully tears down all handlers:
 	 * - Cancels all scheduled tasks
-	 * - Detaches all event listeners
+	 * - Detaches all interaction and event listeners
+	 * - Removes the signal handlers registered by init()
 	 *
 	 * Safe to call multiple times.
 	 */
 	public shutdown(): void {
+		if (this.isShutDown) return;
+		this.isShutDown = true;
+
 		logger.info("HandlerManager shutting down...");
 
 		this.taskHandler?.cancelAll();
 		this.commandHandler?.detach();
 		this.contextMenuHandler?.detach();
+		this.eventHandler?.detach();
 
-		if (this.eventHandler) {
-			detachEvents({
-				client: this.client,
-				attached: this.eventHandler.attachedHandlers,
-			});
+		for (const [signal, listener] of this.signalListeners) {
+			process.off(signal, listener);
 		}
+		this.signalListeners = [];
 
 		logger.info("HandlerManager shutdown complete.");
 	}
 
 	private registerShutdownSignals(): void {
-		const handler = (signal: string) => {
-			logger.info(`Received ${signal}. Shutting down...`);
-			this.shutdown();
-			process.exit(0);
-		};
+		for (const signal of ["SIGINT", "SIGTERM"] as const) {
+			const listener = () => {
+				logger.info(`Received ${signal}. Shutting down...`);
+				this.shutdown();
 
-		process.once("SIGINT", () => handler("SIGINT"));
-		process.once("SIGTERM", () => handler("SIGTERM"));
+				// Close the gateway connection cleanly if the client supports it
+				// (discord.js Client does), then exit.
+				Promise.resolve()
+					.then(() => this.client.destroy?.())
+					.catch((err) => logger.error("Error destroying client", err))
+					.finally(() => process.exit(0));
+			};
+
+			process.once(signal, listener);
+			this.signalListeners.push([signal, listener]);
+		}
 	}
 
 	private async registerApplicationCommands(): Promise<void> {
@@ -212,14 +230,17 @@ export class HandlerManager {
 			});
 		}
 
-		for (const plan of combineRegistrationPlans(plans)) {
-			await registerCommands({
-				token: plan.register.token,
-				applicationId: plan.register.applicationId,
-				where: plan.register.where,
-				commandJson: plan.commandJson,
-				cache: plan.cache,
-			});
-		}
+		// Different scopes are independent, so register them concurrently.
+		await Promise.all(
+			combineRegistrationPlans(plans).map((plan) =>
+				registerCommands({
+					token: plan.register.token,
+					applicationId: plan.register.applicationId,
+					where: plan.register.where,
+					commandJson: plan.commandJson,
+					cache: plan.cache,
+				}),
+			),
+		);
 	}
 }

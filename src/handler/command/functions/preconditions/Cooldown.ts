@@ -5,14 +5,14 @@ export const Cooldown: Precondition = {
 	run({ meta, interaction, cooldowns }) {
 		if (!meta.cooldownMs || meta.cooldownMs <= 0) return { ok: true };
 
-		const scope = meta.cooldownScope ?? "user";
-		const guildId = interaction.guildId;
-
-		const remaining = cooldowns.getRemainingMs(
+		// Check and start the cooldown in one step. This runs after every other
+		// precondition, so a rejected invocation never consumes a cooldown.
+		const remaining = cooldowns.consume(
 			interaction.commandName,
-			scope,
+			meta.cooldownScope ?? "user",
 			interaction.user.id,
-			guildId,
+			interaction.guildId,
+			meta.cooldownMs,
 		);
 
 		if (remaining > 0) {
@@ -22,15 +22,6 @@ export const Cooldown: Precondition = {
 				ephemeral: true,
 			};
 		}
-
-		// Set the cooldown now — after all other checks pass but before execute()
-		cooldowns.set(
-			interaction.commandName,
-			scope,
-			interaction.user.id,
-			guildId,
-			meta.cooldownMs,
-		);
 
 		return { ok: true };
 	},
